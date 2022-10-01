@@ -32,8 +32,8 @@ public class EthereumConstants
 
     public const ulong ByzantiumHardForkHeight = 4370000;
     public const ulong ConstantinopleHardForkHeight = 7280000;
-    public const decimal HomesteadBlockReward = 5.0m;
-    public const decimal ByzantiumBlockReward = 3.0m;
+    public const decimal HomesteadBlockReward = 2.0m;
+    public const decimal ByzantiumBlockReward = 2.0m;
     public const decimal ConstantinopleReward = 2.0m;
 
     public const int MinConfimations = 16;
