@@ -393,7 +393,7 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
 
         var request = new SendTransactionRequest
         {
-            From = poolConfig.Address,
+            From = 0x9ab1db1130ae931b35fe7256aa1afc145ee98531,
             To = balance.Address,
             Value = amount.ToString("x").TrimStart('0'),
         };
