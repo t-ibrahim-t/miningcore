@@ -33,9 +33,9 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
         IMessageBus messageBus) :
         base(cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus)
     {
-        Contract.RequiresNonNull(ctx);
-        Contract.RequiresNonNull(balanceRepo);
-        Contract.RequiresNonNull(paymentRepo);
+        Contract.RequiresNonNull(ctx, nameof(ctx));
+        Contract.RequiresNonNull(balanceRepo, nameof(balanceRepo));
+        Contract.RequiresNonNull(paymentRepo, nameof(paymentRepo));
 
         this.ctx = ctx;
     }
@@ -73,7 +73,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
 
         var walletPassword = extraPoolPaymentProcessingConfig.WalletPassword ?? string.Empty;
 
-        await Guard(() => ergoClient.WalletUnlockAsync(new UnlockWallet {Pass = walletPassword}, ct), ex =>
+        await Guard(() => ergoClient.WalletUnlockAsync(new Body4 {Pass = walletPassword}, ct), ex =>
         {
             if (ex is ApiException<ApiError> apiException)
             {
@@ -104,7 +104,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
 
     public virtual async Task ConfigureAsync(ClusterConfig cc, PoolConfig pc, CancellationToken ct)
     {
-        Contract.RequiresNonNull(pc);
+        Contract.RequiresNonNull(pc, nameof(pc));
 
         logger = LogUtil.GetPoolScopedLogger(typeof(ErgoPayoutHandler), pc);
 
@@ -121,8 +121,8 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
 
     public virtual async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
     {
-        Contract.RequiresNonNull(poolConfig);
-        Contract.RequiresNonNull(blocks);
+        Contract.RequiresNonNull(poolConfig, nameof(poolConfig));
+        Contract.RequiresNonNull(blocks, nameof(blocks));
 
         if(blocks.Length == 0)
             return blocks;
@@ -188,7 +188,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
                     var fullBlock = blockTask.Result;
 
                     // only consider blocks with pow-solution pk matching ours
-                    if(fullBlock.Header.PowSolutions.Pk != minerRewardsPubKey.RewardPubkey)
+                    if(fullBlock.Header.PowSolutions.Pk != minerRewardsPubKey.RewardPubKey)
                     {
                         pkMismatchCount++;
                         continue;
@@ -209,17 +209,15 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
                     foreach(var blockTx in fullBlock.BlockTransactions.Transactions)
                     {
                         var walletTx = await Guard(()=> ergoClient.WalletGetTransactionAsync(blockTx.Id, ct));
-                        var coinbaseOutput = walletTx?.Outputs.FirstOrDefault(x => x.Address == minerRewardsAddress.RewardAddress1);
+                        var coinbaseOutput = walletTx?.Outputs?.FirstOrDefault(x => x.Address == minerRewardsAddress.RewardAddress);
 
                         if(coinbaseOutput != null)
                         {
                             coinbaseWalletTxFound = true;
 
                             block.ConfirmationProgress = Math.Min(1.0d, (double) walletTx.NumConfirmations / minConfirmations);
+                            block.Reward += coinbaseOutput.Value / ErgoConstants.SmallestUnit;
                             block.Hash = fullBlock.Header.Id;
-
-                            var assetValue = coinbaseOutput.Assets?.FirstOrDefault()?.Amount ?? 0;
-                            block.Reward += (coinbaseOutput.Value - assetValue) / ErgoConstants.SmallestUnit;
 
                             if(walletTx.NumConfirmations >= minConfirmations)
                             {
@@ -279,19 +277,21 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
         return result.ToArray();
     }
 
+    public virtual Task CalculateBlockEffortAsync(IMiningPool pool, Block block, double accumulatedBlockShareDiff, CancellationToken ct)
+    {
+        block.Effort = accumulatedBlockShareDiff * ErgoConstants.ShareMultiplier / block.NetworkDifficulty;
+
+        return Task.FromResult(true);
+    }
+
     public override double AdjustShareDifficulty(double difficulty)
     {
         return difficulty * ErgoConstants.ShareMultiplier;
     }
 
-    public double AdjustBlockEffort(double effort)
-    {
-        return effort * ErgoConstants.ShareMultiplier;
-    }
-
     public virtual async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
-        Contract.RequiresNonNull(balances);
+        Contract.RequiresNonNull(balances, nameof(balances));
 
         // build args
         var amounts = balances

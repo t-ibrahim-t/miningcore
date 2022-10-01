@@ -4,7 +4,7 @@ using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using Autofac;
 using AutoMapper;
-using Microsoft.IO;
+using JetBrains.Annotations;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
@@ -24,6 +24,7 @@ using static Miningcore.Util.ActionUtils;
 namespace Miningcore.Blockchain.Bitcoin;
 
 [CoinFamily(CoinFamily.Bitcoin)]
+[UsedImplicitly]
 public class BitcoinPool : PoolBase
 {
     public BitcoinPool(IComponentContext ctx,
@@ -33,9 +34,8 @@ public class BitcoinPool : PoolBase
         IMapper mapper,
         IMasterClock clock,
         IMessageBus messageBus,
-        RecyclableMemoryStreamManager rmsm,
         NicehashService nicehashService) :
-        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, rmsm, nicehashService)
+        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, nicehashService)
     {
     }
 
@@ -138,15 +138,12 @@ public class BitcoinPool : PoolBase
         {
             await connection.RespondErrorAsync(StratumError.UnauthorizedWorker, "Authorization failed", request.Id, context.IsAuthorized);
 
-            if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
-            {
-                // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+            // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
+            logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+            banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-                Disconnect(connection);
-            }
+            CloseConnection(connection);
         }
     }
 
@@ -178,10 +175,12 @@ public class BitcoinPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            var requestParams = request.ParamsAs<string[]>();
-
             // submit
+            var requestParams = request.ParamsAs<string[]>();
+            var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
+
             var share = await manager.SubmitShareAsync(connection, requestParams, ct);
+
             await connection.RespondAsync(true, request.Id);
 
             // publish
@@ -198,8 +197,7 @@ public class BitcoinPool : PoolBase
 
             // update client stats
             context.Stats.ValidShares++;
-
-            await UpdateVarDiffAsync(connection, false, ct);
+            await UpdateVarDiffAsync(connection);
         }
 
         catch(StratumException ex)
@@ -317,15 +315,21 @@ public class BitcoinPool : PoolBase
         }
     }
 
-    protected virtual async Task OnNewJobAsync(object jobParams)
+    protected virtual Task OnNewJobAsync(object jobParams)
     {
         currentJobParams = jobParams;
 
-        logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
+        logger.Info(() => "Broadcasting job");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        return Guard(()=> Task.WhenAll(ForEachConnection(async connection =>
         {
+            if(!connection.IsAlive)
+                return;
+
             var context = connection.ContextAs<BitcoinWorkerContext>();
+
+            if(!context.IsSubscribed || !context.IsAuthorized || CloseIfDead(connection, context))
+                return;
 
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
@@ -333,7 +337,7 @@ public class BitcoinPool : PoolBase
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
-        }));
+        })), ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"));
     }
 
     public override double HashrateFromShares(double shares, double interval)
@@ -341,8 +345,7 @@ public class BitcoinPool : PoolBase
         var multiplier = BitcoinConstants.Pow2x32;
         var result = shares * multiplier / interval;
 
-        if(coin.HashrateMultiplier.HasValue)
-            result *= coin.HashrateMultiplier.Value;
+        //result *= coin.HashrateMultiplier;
 
         return result;
     }
@@ -390,9 +393,9 @@ public class BitcoinPool : PoolBase
         }
     }
 
-    protected override async Task InitStatsAsync(CancellationToken ct)
+    protected override async Task InitStatsAsync()
     {
-        await base.InitStatsAsync(ct);
+        await base.InitStatsAsync();
 
         blockchainStats = manager.BlockchainStats;
     }
@@ -458,13 +461,16 @@ public class BitcoinPool : PoolBase
         }
     }
 
-    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
+    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff)
     {
-        await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
+        var context = connection.ContextAs<BitcoinWorkerContext>();
 
-        if(connection.Context.ApplyPendingDifficulty())
+        context.EnqueueNewDifficulty(newDiff);
+
+        // apply immediately and notify
+        if(context.ApplyPendingDifficulty())
         {
-            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
+            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
         }
     }

@@ -67,7 +67,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
-        Contract.RequiresNonNull(balances);
+        Contract.RequiresNonNull(balances, nameof(balances));
 
         // Shield first
         if(supportsNativeShielding)
@@ -179,7 +179,6 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                         }
 
                         logger.Info(() => $"[{LogCategory}] Waiting for completion: {operationId}");
-
                         await Task.Delay(TimeSpan.FromSeconds(10), ct);
                     }
                 }
@@ -367,11 +366,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
         logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} operation id: {operationId}");
 
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-
         var continueWaiting = true;
 
-        do
+        while(continueWaiting)
         {
             var operationResultResponse = await rpcClient.ExecuteAsync<ZCashAsyncOperationStatus[]>(logger,
                 EquihashCommands.ZGetOperationResult, ct, new object[] { new object[] { operationId } });
@@ -406,6 +403,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             }
 
             logger.Info(() => $"[{LogCategory}] Waiting for shielding transfer completion: {operationId}");
-        } while(continueWaiting && await timer.WaitForNextTickAsync(ct));
+
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+        }
     }
 }

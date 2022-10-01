@@ -21,7 +21,7 @@ public static unsafe class CryptonoteBindings
 
     public static byte[] ConvertBlob(ReadOnlySpan<byte> data, int size)
     {
-        Contract.Requires<ArgumentException>(data.Length > 0);
+        Contract.Requires<ArgumentException>(data.Length > 0, $"{nameof(data)} must not be empty");
 
         fixed (byte* input = data)
         {
@@ -73,11 +73,9 @@ public static unsafe class CryptonoteBindings
 
     public static ulong DecodeAddress(string address)
     {
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(address));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(address), $"{nameof(address)} must not be empty");
 
-        var cb = Encoding.UTF8.GetByteCount(address);
-        Span<byte> data = stackalloc byte[cb];
-        Encoding.UTF8.GetBytes(address, data);
+        var data = Encoding.UTF8.GetBytes(address);
 
         fixed (byte* input = data)
         {
@@ -87,11 +85,9 @@ public static unsafe class CryptonoteBindings
 
     public static ulong DecodeIntegratedAddress(string address)
     {
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(address));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(address), $"{nameof(address)} must not be empty");
 
-        var cb = Encoding.UTF8.GetByteCount(address);
-        Span<byte> data = stackalloc byte[cb];
-        Encoding.UTF8.GetBytes(address, data);
+        var data = Encoding.UTF8.GetBytes(address);
 
         fixed (byte* input = data)
         {
@@ -101,7 +97,7 @@ public static unsafe class CryptonoteBindings
 
     public static void CryptonightHashFast(ReadOnlySpan<byte> data, Span<byte> result)
     {
-        Contract.Requires<ArgumentException>(result.Length >= 32);
+        Contract.Requires<ArgumentException>(result.Length >= 32, $"{nameof(result)} must be greater or equal 32 bytes");
 
         fixed (byte* input = data)
         {

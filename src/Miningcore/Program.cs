@@ -4,7 +4,6 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json.Serialization;
 using AspNetCoreRateLimit;
 using Autofac;
 using Autofac.Extensions.DependencyInjection;
@@ -19,7 +18,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.IO;
 using Miningcore.Api;
 using Miningcore.Api.Controllers;
 using Miningcore.Api.Middlewares;
@@ -55,7 +53,6 @@ using Prometheus;
 using WebSocketManager;
 using ILogger = NLog.ILogger;
 using LogLevel = Microsoft.Extensions.Logging.LogLevel;
-using static Miningcore.Util.ActionUtils;
 
 // ReSharper disable AssignNullToNotNullAttribute
 // ReSharper disable PossibleNullReferenceException
@@ -177,9 +174,6 @@ public class Program : BackgroundService
                         .AddJsonOptions(options =>
                         {
                             options.JsonSerializerOptions.WriteIndented = true;
-
-                            if(!clusterConfig.Api.LegacyNullValueHandling)
-                                options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
                         });
 
                         // NSwag
@@ -227,14 +221,11 @@ public class Program : BackgroundService
                         app.UseWebSockets();
                         app.MapWebSocketManager("/notifications", app.ApplicationServices.GetService<WebSocketNotificationsRelay>());
                         app.UseMetricServer();
-
-                        app.UseMiddleware<ApiRequestMetricsMiddleware>();
-
                         app.UseMvc();
                     });
 
-                    logger.Info(() => $"Prometheus Metrics API listening on http{(apiTlsEnable ? "s" : "")}://{address}:{port}/metrics");
-                    logger.Info(() => $"WebSocket Events streaming on ws{(apiTlsEnable ? "s" : "")}://{address}:{port}/notifications");
+                    logger.Info(() => $"Prometheus Metrics {address}:{port}/metrics");
+                    logger.Info(() => $"WebSocket notifications streaming {address}:{port}/notifications");
                 });
             }
 
@@ -319,7 +310,6 @@ public class Program : BackgroundService
 
     private static IHost host;
     private readonly IComponentContext container;
-    private readonly IHostApplicationLifetime hal;
     private static ILogger logger;
     private static CommandOption versionOption;
     private static CommandOption configFileOption;
@@ -331,10 +321,9 @@ public class Program : BackgroundService
     private static readonly ConcurrentDictionary<string, IMiningPool> pools = new();
     private static readonly AdminGcStats gcStats = new();
 
-    public Program(IComponentContext container, IHostApplicationLifetime hal)
+    public Program(IComponentContext container)
     {
         this.container = container;
-        this.hal = hal;
     }
 
     private static void ConfigureAutofac(ContainerBuilder builder)
@@ -365,45 +354,33 @@ public class Program : BackgroundService
         var coinTemplates = LoadCoinTemplates();
         logger.Info($"{coinTemplates.Keys.Count} coins loaded from '{string.Join(", ", clusterConfig.CoinTemplates)}'");
 
-        await Guard(()=> Task.WhenAll(clusterConfig.Pools
+        await Task.WhenAll(clusterConfig.Pools
             .Where(config => config.Enabled)
-            .Select(config => RunPool(config, coinTemplates, ct))),
-            ex =>
-            {
-                if(ex is PoolStartupException pse)
-                {
-                    var _logger = pse.PoolId != null ? LogUtil.GetPoolScopedLogger(GetType(), pse.PoolId) : logger;
-                    _logger.Error(() => $"{pse.Message}");
-
-                    logger.Error(() => "Cluster cannot start. Good Bye!");
-
-                    hal.StopApplication();
-                }
-
-                else
-                    throw ex;
-            });
+            .Select(config => RunPool(config, coinTemplates, ct)));
     }
 
-    private async Task RunPool(PoolConfig poolConfig, Dictionary<string, CoinTemplate> coinTemplates, CancellationToken ct)
+    private Task RunPool(PoolConfig poolConfig, Dictionary<string, CoinTemplate> coinTemplates, CancellationToken ct)
     {
-        // Lookup coin
-        if(!coinTemplates.TryGetValue(poolConfig.Coin, out var template))
-            throw new PoolStartupException($"Pool {poolConfig.Id} references undefined coin '{poolConfig.Coin}'", poolConfig.Id);
+        return Task.Run(async () =>
+        {
+            // Lookup coin
+            if(!coinTemplates.TryGetValue(poolConfig.Coin, out var template))
+                throw new PoolStartupException($"Pool {poolConfig.Id} references undefined coin '{poolConfig.Coin}'");
 
-        poolConfig.Template = template;
+            poolConfig.Template = template;
 
-        // resolve implementation
-        var poolImpl = container.Resolve<IEnumerable<Meta<Lazy<IMiningPool, CoinFamilyAttribute>>>>()
-            .First(x => x.Value.Metadata.SupportedFamilies.Contains(poolConfig.Template.Family)).Value;
+            // resolve implementation
+            var poolImpl = container.Resolve<IEnumerable<Meta<Lazy<IMiningPool, CoinFamilyAttribute>>>>()
+                .First(x => x.Value.Metadata.SupportedFamilies.Contains(poolConfig.Template.Family)).Value;
 
-        // configure
-        var pool = poolImpl.Value;
-        pool.Configure(poolConfig, clusterConfig);
-        pools[poolConfig.Id] = pool;
+            // configure
+            var pool = poolImpl.Value;
+            pool.Configure(poolConfig, clusterConfig);
+            pools[poolConfig.Id] = pool;
 
-        // go
-        await pool.RunAsync(ct);
+            // go
+            await pool.RunAsync(ct);
+        }, ct);
     }
 
     private Task RecoverSharesAsync(string recoveryFilename)
@@ -651,7 +628,6 @@ public class Program : BackgroundService
             loggingConfig.AddRule(level, NLog.LogLevel.Info, nullTarget, "Microsoft.AspNetCore.Mvc.Internal.*", true);
             loggingConfig.AddRule(level, NLog.LogLevel.Info, nullTarget, "Microsoft.AspNetCore.Mvc.Infrastructure.*", true);
             loggingConfig.AddRule(level, NLog.LogLevel.Warn, nullTarget, "System.Net.Http.HttpClient.*", true);
-            loggingConfig.AddRule(level, NLog.LogLevel.Fatal, nullTarget, "Microsoft.Extensions.Hosting.Internal.*", true);
 
             // Api Log
             if(!string.IsNullOrEmpty(config.ApiLogFile) && !isShareRecoveryMode)
@@ -766,11 +742,6 @@ public class Program : BackgroundService
         ZcashNetworks.Instance.EnsureRegistered();
 
         var messageBus = services.GetService<IMessageBus>();
-        var rmsm = services.GetService<RecyclableMemoryStreamManager>();
-
-        // Configure RecyclableMemoryStream
-        rmsm.MaximumFreeSmallPoolBytes = clusterConfig.Memory?.RmsmMaximumFreeSmallPoolBytes ?? 0x100000;   // 1 MB
-        rmsm.MaximumFreeLargePoolBytes = clusterConfig.Memory?.RmsmMaximumFreeLargePoolBytes ?? 0x800000;   // 8 MB
 
         // Configure Equihash
         EquihashSolver.messageBus = messageBus;
@@ -784,7 +755,7 @@ public class Program : BackgroundService
 
         // Configure Cryptonight
         Cryptonight.messageBus = messageBus;
-        Cryptonight.InitContexts(GetDefaultConcurrency(clusterConfig.CryptonightMaxThreads));
+        Cryptonight.InitContexts(clusterConfig.CryptonightMaxThreads ?? 1);
 
         // Configure RandomX
         RandomX.messageBus = messageBus;
@@ -800,23 +771,11 @@ public class Program : BackgroundService
 
         var cf = services.GetService<IConnectionFactory>();
 
-        bool enableLegacyTimestampBehavior = false;
+        // check if 'shares.created' is legacy timestamp (without timezone)
+        var columnType = await GetPostgresColumnType(cf, "shares", "created");
+        var isLegacyTimestamps = columnType.ToLower().Contains("without time zone");
 
-        if(!clusterConfig.Persistence.Postgres.EnableLegacyTimestamps.HasValue)
-        {
-            // check if 'shares.created' is legacy timestamp (without timezone)
-            var columnType = await GetPostgresColumnType(cf, "shares", "created");
-
-            if(columnType != null)
-                enableLegacyTimestampBehavior = columnType.ToLower().Contains("without time zone");
-            else
-                logger.Warn(() => "Unable to auto-detect Npgsql Legacy Timestamp Behavior. Please set 'EnableLegacyTimestamps' in your Miningcore Database configuration to'true' or 'false' to bypass auto-detection in case of problems");
-        }
-
-        else
-            enableLegacyTimestampBehavior = clusterConfig.Persistence.Postgres.EnableLegacyTimestamps.Value;
-
-        if(enableLegacyTimestampBehavior)
+        if(isLegacyTimestamps)
         {
             logger.Info(()=> "Enabling Npgsql Legacy Timestamp Behavior");
 
@@ -824,11 +783,11 @@ public class Program : BackgroundService
         }
     }
 
-    private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)
+    private static Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)
     {
         const string query = "SELECT data_type FROM information_schema.columns WHERE table_name = @table AND column_name = @column";
 
-        return await cf.Run(async con => await con.ExecuteScalarAsync<string>(query, new { table, column }));
+        return cf.Run(con => con.ExecuteScalarAsync<string>(query, new { table, column }));
     }
 
     private static void ConfigurePersistence(ContainerBuilder builder)
@@ -844,7 +803,7 @@ public class Program : BackgroundService
             ConfigureDummyPersistence(builder);
     }
 
-    private static void ConfigurePostgres(PostgresConfig pgConfig, ContainerBuilder builder)
+    private static void ConfigurePostgres(DatabaseConfig pgConfig, ContainerBuilder builder)
     {
         // validate config
         if(string.IsNullOrEmpty(pgConfig.Host))
@@ -860,37 +819,16 @@ public class Program : BackgroundService
             throw new PoolStartupException("Postgres configuration: invalid or missing 'user'");
 
         // build connection string
-        var connectionString = new StringBuilder($"Server={pgConfig.Host};Port={pgConfig.Port};Database={pgConfig.Database};User Id={pgConfig.User};Password={pgConfig.Password};");
-
-        if(pgConfig.Tls)
-        {
-            connectionString.Append("SSL Mode=Require;");
-
-            if(pgConfig.TlsNoValidate)
-                connectionString.Append("Trust Server Certificate=true;");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsCert?.Trim()))
-                connectionString.Append($"SSL Certificate={pgConfig.TlsCert.Trim()};");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsKey?.Trim()))
-                connectionString.Append($"SSL Key={pgConfig.TlsKey.Trim()};");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsPassword))
-                connectionString.Append($"SSL Password={pgConfig.TlsPassword};");
-        }
-
-        connectionString.Append($"CommandTimeout={pgConfig.CommandTimeout ?? 300};");
-
-        logger.Debug(()=> $"Using postgres connection string: {connectionString}");
+        var connectionString = $"Server={pgConfig.Host};Port={pgConfig.Port};Database={pgConfig.Database};User Id={pgConfig.User};Password={pgConfig.Password};CommandTimeout=900;";
 
         // register connection factory
-        builder.RegisterInstance(new PgConnectionFactory(connectionString.ToString()))
+        builder.RegisterInstance(new PgConnectionFactory(connectionString))
             .AsImplementedInterfaces();
 
         // register repositories
         builder.RegisterAssemblyTypes(Assembly.GetExecutingAssembly())
             .Where(t =>
-                t?.Namespace?.StartsWith(typeof(ShareRepository).Namespace) == true)
+            t?.Namespace?.StartsWith(typeof(ShareRepository).Namespace) == true)
             .AsImplementedInterfaces()
             .SingleInstance();
     }
@@ -993,18 +931,6 @@ public class Program : BackgroundService
         options.GeneralRules = rules;
 
         logger.Info(() => $"API access limited to {(string.Join(", ", rules.Select(x => $"{x.Limit} requests per {x.Period}")))}, except from {string.Join(", ", options.IpWhitelist)}");
-    }
-
-    private static int GetDefaultConcurrency(int? value)
-    {
-        value = value switch
-        {
-            null => 1,
-            -1 => Environment.ProcessorCount,
-            _ => value
-        };
-
-        return value.Value;
     }
 
     private static void OnAppDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)

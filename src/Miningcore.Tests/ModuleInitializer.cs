@@ -5,8 +5,6 @@ using Autofac;
 using AutoMapper;
 using Miningcore.Configuration;
 using Miningcore.Native;
-using Miningcore.Tests.Util;
-using Miningcore.Time;
 
 namespace Miningcore.Tests;
 
@@ -39,8 +37,6 @@ public static class ModuleInitializer
             var amConf = new MapperConfiguration(cfg => { cfg.AddProfile(new AutoMapperProfile()); });
 
             builder.Register((ctx, parms) => amConf.CreateMapper());
-
-            builder.RegisterType<MockMasterClock>().AsImplementedInterfaces();
 
             // Autofac Container
             container = builder.Build();

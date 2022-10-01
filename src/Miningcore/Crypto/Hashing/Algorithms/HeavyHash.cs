@@ -8,7 +8,7 @@ public unsafe class HeavyHash : IHashAlgorithm
 {
     public void Digest(ReadOnlySpan<byte> data, Span<byte> result, params object[] extra)
     {
-        Contract.Requires<ArgumentException>(result.Length >= 32);
+        Contract.Requires<ArgumentException>(result.Length >= 32, $"{nameof(result)} must be greater or equal 32 bytes");
 
         fixed (byte* input = data)
         {

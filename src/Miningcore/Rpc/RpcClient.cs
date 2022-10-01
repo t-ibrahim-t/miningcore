@@ -26,9 +26,9 @@ public class RpcClient
 {
     public RpcClient(DaemonEndpointConfig endPoint, JsonSerializerSettings serializerSettings, IMessageBus messageBus, string poolId)
     {
-        Contract.RequiresNonNull(serializerSettings);
-        Contract.RequiresNonNull(messageBus);
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(poolId));
+        Contract.RequiresNonNull(serializerSettings, nameof(serializerSettings));
+        Contract.RequiresNonNull(messageBus, nameof(messageBus));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(poolId), $"{nameof(poolId)} must not be empty");
 
         config = endPoint;
         this.serializerSettings = serializerSettings;
@@ -60,7 +60,9 @@ public class RpcClient
         object payload = null, bool throwOnError = false)
         where TResponse : class
     {
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method), $"{nameof(method)} must not be empty");
+
+        logger.LogInvoke(new object[] { method });
 
         try
         {
@@ -93,7 +95,9 @@ public class RpcClient
 
     public async Task<RpcResponse<JToken>[]> ExecuteBatchAsync(ILogger logger, CancellationToken ct, params RpcRequest[] batch)
     {
-        Contract.RequiresNonNull(batch);
+        Contract.RequiresNonNull(batch, nameof(batch));
+
+        logger.LogInvoke(string.Join(", ", batch.Select(x=> x.Method)));
 
         try
         {
@@ -114,7 +118,9 @@ public class RpcClient
         string method, object payload = null,
         JsonSerializerSettings payloadJsonSerializerSettings = null)
     {
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method), $"{nameof(method)} must not be empty");
+
+        logger.LogInvoke(new object[] { method });
 
         return WebsocketSubscribeEndpoint(logger, ct, endPoint, method, payload, payloadJsonSerializerSettings)
             .Publish()
@@ -123,6 +129,8 @@ public class RpcClient
 
     public IObservable<ZMessage> ZmqSubscribe(ILogger logger, CancellationToken ct, Dictionary<DaemonEndpointConfig, (string Socket, string Topic)> portMap)
     {
+        logger.LogInvoke();
+
         return portMap.Keys
             .Select(endPoint => ZmqSubscribeEndpoint(logger, ct, portMap[endPoint].Socket, portMap[endPoint].Topic))
             .Merge()
@@ -171,8 +179,6 @@ public class RpcClient
             {
                 // read response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
-
-                logger.Trace(() => $"Received RPC response: {responseContent}");
 
                 // deserialize response
                 using(var jreader = new JsonTextReader(new StringReader(responseContent)))
@@ -224,11 +230,9 @@ public class RpcClient
             using(var response = await httpClient.SendAsync(request, ct))
             {
                 // deserialize response
-                var responseContent = await response.Content.ReadAsStringAsync(ct);
+                var jsonResponse = await response.Content.ReadAsStringAsync(ct);
 
-                logger.Trace(() => $"Received RPC response: {responseContent}");
-
-                using(var jreader = new JsonTextReader(new StringReader(responseContent)))
+                using(var jreader = new JsonTextReader(new StringReader(jsonResponse)))
                 {
                     var result = serializer.Deserialize<JsonRpcResponse<JToken>[]>(jreader);
 
@@ -286,7 +290,7 @@ public class RpcClient
                                 // stream response
                                 while(!cts.IsCancellationRequested && client.State == WebSocketState.Open)
                                 {
-                                    await using var stream = new MemoryStream();
+                                    var stream = new MemoryStream();
 
                                     do
                                     {

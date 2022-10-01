@@ -19,6 +19,7 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public class BitcoinJob
 {
+    private const string SymbolRaptoreum = "RTM";
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
     protected IHashAlgorithm coinbaseHasher;
@@ -532,15 +533,15 @@ public class BitcoinJob
         bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
         IHashAlgorithm headerHasher, IHashAlgorithm blockHasher)
     {
-        Contract.RequiresNonNull(blockTemplate);
-        Contract.RequiresNonNull(pc);
-        Contract.RequiresNonNull(cc);
-        Contract.RequiresNonNull(clock);
-        Contract.RequiresNonNull(poolAddressDestination);
-        Contract.RequiresNonNull(coinbaseHasher);
-        Contract.RequiresNonNull(headerHasher);
-        Contract.RequiresNonNull(blockHasher);
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(jobId));
+        Contract.RequiresNonNull(blockTemplate, nameof(blockTemplate));
+        Contract.RequiresNonNull(pc, nameof(pc));
+        Contract.RequiresNonNull(cc, nameof(cc));
+        Contract.RequiresNonNull(clock, nameof(clock));
+        Contract.RequiresNonNull(poolAddressDestination, nameof(poolAddressDestination));
+        Contract.RequiresNonNull(coinbaseHasher, nameof(coinbaseHasher));
+        Contract.RequiresNonNull(headerHasher, nameof(headerHasher));
+        Contract.RequiresNonNull(blockHasher, nameof(blockHasher));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(jobId), $"{nameof(jobId)} must not be empty");
 
         coin = pc.Template.As<BitcoinTemplate>();
         networkParams = coin.GetNetwork(network.ChainName);
@@ -569,7 +570,7 @@ public class BitcoinJob
         {
             masterNodeParameters = BlockTemplate.Extra.SafeExtensionDataAs<MasterNodeBlockTemplateExtra>();
 
-            if(coin.Symbol == "RTM")
+            if(coin.Symbol == SymbolRaptoreum)
             {
                 if(masterNodeParameters.Extra?.ContainsKey("smartnode") == true)
                 {
@@ -634,10 +635,10 @@ public class BitcoinJob
     public virtual (Share Share, string BlockHex) ProcessShare(StratumConnection worker,
         string extraNonce2, string nTime, string nonce, string versionBits = null)
     {
-        Contract.RequiresNonNull(worker);
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(extraNonce2));
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nTime));
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nonce));
+        Contract.RequiresNonNull(worker, nameof(worker));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(extraNonce2), $"{nameof(extraNonce2)} must not be empty");
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nTime), $"{nameof(nTime)} must not be empty");
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nonce), $"{nameof(nonce)} must not be empty");
 
         var context = worker.ContextAs<BitcoinWorkerContext>();
 

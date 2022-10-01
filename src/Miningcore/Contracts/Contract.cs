@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using JetBrains.Annotations;
 
 namespace Miningcore.Contracts;
@@ -9,7 +8,7 @@ namespace Miningcore.Contracts;
 public class Contract
 {
     [ContractAnnotation("predicate:false => halt")]
-    public static void Requires<TException>(bool predicate, [CallerArgumentExpression("predicate")] string message = "")
+    public static void Requires<TException>(bool predicate, string message = null)
         where TException : Exception, new()
     {
         if(!predicate)
@@ -20,10 +19,10 @@ public class Contract
     }
 
     [ContractAnnotation("parameter:null => halt")]
-    public static void RequiresNonNull(object parameter, [CallerArgumentExpression("parameter")] string message = "")
+    public static void RequiresNonNull(object parameter, string paramName)
     {
         if(parameter == null)
-            throw new ArgumentNullException($"{message} must not be null");
+            throw new ArgumentNullException(paramName);
     }
 
     #region Exception Constructors
@@ -40,7 +39,7 @@ public class Contract
             x => x.GetParameters().Length == 1 && x.GetParameters().First().ParameterType == typeof(string));
         var paramExpr = Expression.Parameter(typeof(object[]));
 
-        // To feed the constructor with the right parameters, we need to generate an array
+        // To feed the constructor with the right parameters, we need to generate an array 
         // of parameters that will be read from the initialize object array argument.
         var constructorParameters = parameters.Select((paramType, index) =>
             // convert the object[index] to the right constructor parameter type.

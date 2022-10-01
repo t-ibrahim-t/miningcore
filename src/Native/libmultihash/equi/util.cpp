@@ -70,13 +70,10 @@ bool fLogTimeMicros = false;
 
 int LogPrintStr(const std::string &str)
 {
-#ifdef DEBUG  
     int ret = 0; // Returns total number of characters written
 	// print to console
 	ret = fwrite(str.data(), 1, str.size(), stdout);
 	fflush(stdout);
     return ret;
-#else
-  return 0;
-#endif
 }
+

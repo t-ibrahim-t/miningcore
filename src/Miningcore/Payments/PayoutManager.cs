@@ -31,12 +31,12 @@ public class PayoutManager : BackgroundService
         ClusterConfig clusterConfig,
         IMessageBus messageBus)
     {
-        Contract.RequiresNonNull(ctx);
-        Contract.RequiresNonNull(cf);
-        Contract.RequiresNonNull(blockRepo);
-        Contract.RequiresNonNull(shareRepo);
-        Contract.RequiresNonNull(balanceRepo);
-        Contract.RequiresNonNull(messageBus);
+        Contract.RequiresNonNull(ctx, nameof(ctx));
+        Contract.RequiresNonNull(cf, nameof(cf));
+        Contract.RequiresNonNull(blockRepo, nameof(blockRepo));
+        Contract.RequiresNonNull(shareRepo, nameof(shareRepo));
+        Contract.RequiresNonNull(balanceRepo, nameof(balanceRepo));
+        Contract.RequiresNonNull(messageBus, nameof(messageBus));
 
         this.ctx = ctx;
         this.cf = cf;
@@ -83,31 +83,31 @@ public class PayoutManager : BackgroundService
     {
         foreach(var pool in pools.Values.ToArray().Where(x => x.Config.Enabled && x.Config.PaymentProcessing.Enabled))
         {
-            var poolConfig = pool.Config;
+            var config = pool.Config;
 
-            logger.Info(() => $"Processing payments for pool {poolConfig.Id}");
+            logger.Info(() => $"Processing payments for pool {config.Id}");
 
             try
             {
-                var family = HandleFamilyOverride(poolConfig.Template.Family, poolConfig);
+                var family = HandleFamilyOverride(config.Template.Family, config);
 
                 // resolve payout handler
                 var handlerImpl = ctx.Resolve<IEnumerable<Meta<Lazy<IPayoutHandler, CoinFamilyAttribute>>>>()
                     .First(x => x.Value.Metadata.SupportedFamilies.Contains(family)).Value;
 
                 var handler = handlerImpl.Value;
-                await handler.ConfigureAsync(clusterConfig, poolConfig, ct);
+                await handler.ConfigureAsync(clusterConfig, config, ct);
 
                 // resolve payout scheme
-                var scheme = ctx.ResolveKeyed<IPayoutScheme>(poolConfig.PaymentProcessing.PayoutScheme);
+                var scheme = ctx.ResolveKeyed<IPayoutScheme>(config.PaymentProcessing.PayoutScheme);
 
-                await UpdatePoolBalancesAsync(pool, poolConfig, handler, scheme, ct);
-                await PayoutPoolBalancesAsync(pool, poolConfig, handler, ct);
+                await UpdatePoolBalancesAsync(pool, config, handler, scheme, ct);
+                await PayoutPoolBalancesAsync(pool, config, handler, ct);
             }
 
             catch(InvalidOperationException ex)
             {
-                logger.Error(ex.InnerException ?? ex, () => $"[{poolConfig.Id}] Payment processing failed");
+                logger.Error(ex.InnerException ?? ex, () => $"[{config.Id}] Payment processing failed");
             }
 
             catch(AggregateException ex)
@@ -115,18 +115,18 @@ public class PayoutManager : BackgroundService
                 switch(ex.InnerException)
                 {
                     case HttpRequestException httpEx:
-                        logger.Error(() => $"[{poolConfig.Id}] Payment processing failed: {httpEx.Message}");
+                        logger.Error(() => $"[{config.Id}] Payment processing failed: {httpEx.Message}");
                         break;
 
                     default:
-                        logger.Error(ex.InnerException, () => $"[{poolConfig.Id}] Payment processing failed");
+                        logger.Error(ex.InnerException, () => $"[{config.Id}] Payment processing failed");
                         break;
                 }
             }
 
             catch(Exception ex)
             {
-                logger.Error(ex, () => $"[{poolConfig.Id}] Payment processing failed");
+                logger.Error(ex, () => $"[{config.Id}] Payment processing failed");
             }
         }
     }
@@ -147,10 +147,10 @@ public class PayoutManager : BackgroundService
         return family;
     }
 
-    private async Task UpdatePoolBalancesAsync(IMiningPool pool, PoolConfig poolConfig, IPayoutHandler handler, IPayoutScheme scheme, CancellationToken ct)
+    private async Task UpdatePoolBalancesAsync(IMiningPool pool, PoolConfig config, IPayoutHandler handler, IPayoutScheme scheme, CancellationToken ct)
     {
         // get pending blockRepo for pool
-        var pendingBlocks = await cf.Run(con => blockRepo.GetPendingBlocksForPoolAsync(con, poolConfig.Id));
+        var pendingBlocks = await cf.Run(con => blockRepo.GetPendingBlocksForPoolAsync(con, config.Id));
 
         // classify
         var updatedBlocks = await handler.ClassifyBlocksAsync(pool, pendingBlocks, ct);
@@ -159,12 +159,12 @@ public class PayoutManager : BackgroundService
         {
             foreach(var block in updatedBlocks.OrderBy(x => x.Created))
             {
-                logger.Info(() => $"Processing payments for pool {poolConfig.Id}, block {block.BlockHeight}");
+                logger.Info(() => $"Processing payments for pool {config.Id}, block {block.BlockHeight}");
 
                 await cf.RunTx(async (con, tx) =>
                 {
                     if(!block.Effort.HasValue)  // fill block effort if empty
-                        await CalculateBlockEffortAsync(pool, poolConfig, block, handler, ct);
+                        await CalculateBlockEffortAsync(pool, config, block, handler, ct);
 
                     switch(block.Status)
                     {
@@ -187,7 +187,7 @@ public class PayoutManager : BackgroundService
         }
 
         else
-            logger.Info(() => $"No updated blocks for pool {poolConfig.Id}");
+            logger.Info(() => $"No updated blocks for pool {config.Id}");
     }
 
     private async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config, IPayoutHandler handler, CancellationToken ct)
@@ -217,17 +217,17 @@ public class PayoutManager : BackgroundService
     {
         messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message, balances.Sum(x => x.Amount), pool.Template.Symbol));
 
-        return Task.CompletedTask;
+        return Task.FromResult(true);
     }
 
-    private async Task CalculateBlockEffortAsync(IMiningPool pool, PoolConfig poolConfig, Block block, IPayoutHandler handler, CancellationToken ct)
+    private async Task CalculateBlockEffortAsync(IMiningPool pool, PoolConfig config, Block block, IPayoutHandler handler, CancellationToken ct)
     {
         // get share date-range
         var from = DateTime.MinValue;
         var to = block.Created;
 
         // get last block for pool
-        var lastBlock = await cf.Run(con => blockRepo.GetBlockBeforeAsync(con, poolConfig.Id, new[]
+        var lastBlock = await cf.Run(con => blockRepo.GetBlockBeforeAsync(con, config.Id, new[]
         {
             BlockStatus.Confirmed,
             BlockStatus.Orphaned,
@@ -237,11 +237,13 @@ public class PayoutManager : BackgroundService
         if(lastBlock != null)
             from = lastBlock.Created;
 
-        block.Effort = await cf.Run(con =>
-            shareRepo.GetEffectiveAccumulatedShareDifficultyBetweenAsync(con, pool.Config.Id, from, to, ct));
+        // get combined diff of all shares for block
+        var accumulatedShareDiffForBlock = await cf.Run(con =>
+            shareRepo.GetAccumulatedShareDifficultyBetweenCreatedAsync(con, config.Id, from, to));
 
-        if(block.Effort.HasValue)
-            block.Effort = handler.AdjustBlockEffort(block.Effort.Value);
+        // handler has the final say
+        if(accumulatedShareDiffForBlock.HasValue)
+            await handler.CalculateBlockEffortAsync(pool, block, accumulatedShareDiffForBlock.Value, ct);
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -258,25 +260,20 @@ public class PayoutManager : BackgroundService
             // Allow all pools to actually come up before the first payment processing run
             await Task.Delay(initialRunDelay, ct);
 
-            using var timer = new PeriodicTimer(interval);
-
-            do
+            while(!ct.IsCancellationRequested)
             {
                 try
                 {
                     await ProcessPoolsAsync(ct);
                 }
 
-                catch(OperationCanceledException)
-                {
-                    // ignored
-                }
-
                 catch(Exception ex)
                 {
                     logger.Error(ex);
                 }
-            } while(await timer.WaitForNextTickAsync(ct));
+
+                await Task.Delay(interval, ct);
+            }
 
             logger.Info(() => "Offline");
         }

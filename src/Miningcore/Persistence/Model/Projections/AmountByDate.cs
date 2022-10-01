@@ -1,7 +1,10 @@
+using JetBrains.Annotations;
+
 namespace Miningcore.Persistence.Model.Projections;
 
-public record AmountByDate
+[UsedImplicitly]
+public class AmountByDate
 {
-    public decimal Amount { get; init; }
-    public DateTime Date { get; init; }
+    public decimal Amount { get; set; }
+    public DateTime Date { get; set; }
 }

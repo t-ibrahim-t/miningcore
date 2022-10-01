@@ -7,6 +7,7 @@ using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
+using Miningcore.Util;
 using NLog;
 using ProtoBuf;
 using ZeroMQ;
@@ -17,7 +18,7 @@ public class ShareRelay : IHostedService
 {
     public ShareRelay(ClusterConfig clusterConfig, IMessageBus messageBus)
     {
-        Contract.RequiresNonNull(messageBus);
+        Contract.RequiresNonNull(messageBus, nameof(messageBus));
 
         this.clusterConfig = clusterConfig;
         this.messageBus = messageBus;

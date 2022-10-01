@@ -25,118 +25,67 @@ Commercial support directly by the maintainer is available through [miningcore.p
 
 For general questions visit the [Discussions Area](https://github.com/oliverw/miningcore/discussions).
 
-## Contributions
-
-Code contributions are very welcome and should be submitted as standard [pull requests](https://docs.github.com/en/pull-requests) (PR) based on the [`dev` branch](https://github.com/oliverw/miningcore/tree/dev).
-
-## Building on Debian/Ubuntu
-
-```console
-git clone https://github.com/oliverw/miningcore
-cd miningcore
-```
-
-Depending on your OS Version run either of these scripts:
-
-```console
-./build-debian-11.sh
-```
-or
-```console
-./build-ubuntu-20.04.sh
-```
-or
-```console
-./build-ubuntu-21.04.sh
-```
-
-## Building on Windows
-
-Download and install the [.NET 6 SDK](https://dotnet.microsoft.com/download/dotnet/6.0)
-
-```dosbatch
-git clone https://github.com/oliverw/miningcore
-cd miningcore
-build-windows.bat
-```
-
-### Building in Visual Studio
-
-- Install [Visual Studio 2022](https://www.visualstudio.com/vs/). Visual Studio Community Edition is fine.
-- Open `Miningcore.sln` in Visual Studio
-
-## Building using Docker Engine
-In case you don't want to install any dependencies then you can build the app using the official Microsoft .NET SDK Docker image.
-
-```console
-git clone https://github.com/oliverw/miningcore
-cd miningcore
-```
-Then build using Docker:
-
-```console
-docker run --rm -v $(pwd):/app -w /app mcr.microsoft.com/dotnet/sdk:6.0 /bin/bash -c 'apt update && apt install libssl-dev pkg-config libboost-all-dev libsodium-dev build-essential cmake -y --no-install-recommends && cd src/Miningcore && dotnet publish -c Release --framework net6.0 -o /app/build/'
-```
-It will use a Linux container, you will build a Linux executable that will not run on Windows or macOS. You can use a runtime argument (-r) to specify the type of assets that you want to publish (if they don't match the SDK container). The following examples assume you want assets that match your host operating system, and use runtime arguments to ensure that.
-
-For macOS:
-
-```console
-docker run --rm -v $(pwd):/app -w /app mcr.microsoft.com/dotnet/sdk:6.0 /bin/bash -c 'apt update && apt install libssl-dev pkg-config libboost-all-dev libsodium-dev build-essential cmake -y --no-install-recommends && cd src/Miningcore && dotnet publish -c Release --framework net6.0 -o /app/build/ -r osx-x64 --self-contained false'
-```
-
-For Windows using Linux container:
-
-```console
-docker run --rm -v $(pwd):/app -w /app mcr.microsoft.com/dotnet/sdk:6.0 /bin/bash -c 'apt update && apt install libssl-dev pkg-config libboost-all-dev libsodium-dev build-essential cmake -y --no-install-recommends && cd src/Miningcore && dotnet publish -c Release --framework net6.0 -o /app/build/ -r win-x64 --self-contained false'
-```
-
-To delete used images and containers you can run after all:
-```console
-docker system prune -af
-```
-
 ## Running Miningcore
 
-### Production OS
+### Linux: pre-built binaries
 
-Windows is **not** a supported production environment. Only Linux is. Please do not file issues related to running a pool on Windows. Windows topics should be posted under [discussions](https://github.com/oliverw/miningcore/discussions).
+- Install [.NET 6 Runtime](https://dotnet.microsoft.com/download/dotnet/6.0)
+- For Debian/Ubuntu, install these packages
+  - `postgresql-11` (or higher, the higher the better)
+  - `libzmq5`
+  - `libboost-system1.67.0`
+  - `libboost-date-time1.67.0`
+- Download `miningcore-linux-ubuntu-x64.tar.gz` from the latest [Release](https://github.com/oliverw/miningcore/releases)
+- Extract the archive
+- Setup the database as outlined below
+- Create a configuration file `config.json` as described [here](https://github.com/oliverw/miningcore/wiki/Configuration)
+- Run `dotnet Miningcore.dll -c config.json`
 
-Running and developing Miningcore on Windows is of course supported.
+### Windows: pre-built binaries
 
-### Database setup
+- Install [.NET 6 Runtime](https://dotnet.microsoft.com/download/dotnet/6.0)
+- Install [PostgreSQL Database](https://www.postgresql.org/)
+- Download `miningcore-win-x64.zip` from the latest [Release](https://github.com/oliverw/miningcore/releases)
+- Extract the Archive
+- Setup the database as outlined below
+- Create a configuration file `config.json` as described [here](https://github.com/oliverw/miningcore/wiki/Configuration)
+- Run `dotnet Miningcore.dll -c config.json`
+
+## Database setup
 
 Miningcore currently requires PostgreSQL 10 or higher.
 
-Run Postgres's `psql` tool:
+Create the database:
 
 ```console
-sudo -u postgres psql
+$ createuser miningcore
+$ createdb miningcore
+$ psql (enter the password for postgres)
 ```
 
-In `psql` execute:
+Inside `psql` execute:
 
 ```sql
-CREATE ROLE miningcore WITH LOGIN ENCRYPTED PASSWORD 'your-secure-password';
-CREATE DATABASE miningcore OWNER miningcore;
+alter user miningcore with encrypted password 'some-secure-password';
+grant all privileges on database miningcore to miningcore;
 ```
-
-Quit `psql` with \q
 
 Import the database schema:
 
 ```console
-sudo -u postgres psql -d miningcore -f miningcore/src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
+$ wget https://raw.githubusercontent.com/oliverw/miningcore/master/src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
+$ psql -d miningcore -U miningcore -f createdb.sql
 ```
 
-#### Advanced setup
+### Advanced setup
 
 If you are planning to run a Multipool-Cluster, the simple setup might not perform well enough under high load. In this case you are strongly advised to use PostgreSQL 11 or higher. After performing the steps outlined in the basic setup above, perform these additional steps:
 
 **WARNING**: The following step will delete all recorded shares. Do **NOT** do this on a production pool unless you backup your `shares` table using `pg_backup` first!
 
 ```console
-sudo -u postgres psql -d miningcore -f miningcore/src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql
+$ wget https://raw.githubusercontent.com/oliverw/miningcore/master/src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql
+$ psql -d miningcore -U miningcore -f createdb_postgresql_11_appendix.sql
 ```
 
 After executing the command, your `shares` table is now a [list-partitioned table](https://www.postgresql.org/docs/11/ddl-partitioning.html) which dramatically improves query performance, since almost all database operations Miningcore performs are scoped to a certain pool.
@@ -149,37 +98,71 @@ CREATE TABLE shares_mypool1 PARTITION OF shares FOR VALUES IN ('mypool1');
 
 Once you have done this for all of your existing pools you should now restore your shares from backup.
 
-### Configuration
+## Configuration
 
-Create a configuration file `config.json` as described [here](https://github.com/oliverw/miningcore/wiki/Configuration).
+Please refer to this Wiki Page: https://github.com/oliverw/miningcore/wiki/Configuration
 
-### Start the Pool
+## Building from Source
+
+### Building on Ubuntu 20.04
 
 ```console
-cd build
-Miningcore -c config.json
+$ wget https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+$ sudo dpkg -i packages-microsoft-prod.deb
+$ sudo apt-get update
+$ sudo apt-get install -y apt-transport-https
+$ sudo apt-get update
+$ sudo apt-get -y install dotnet-sdk-6.0 git cmake build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq5
+$ git clone https://github.com/oliverw/miningcore
+$ cd miningcore/src/Miningcore
+$ dotnet publish -c Release --framework net6.0  -o ../../build
 ```
 
-## Supported Currencies
+### Building on Windows
+
+Download and install the [.NET 6 SDK](https://dotnet.microsoft.com/download/dotnet/6.0)
+
+```dosbatch
+> git clone https://github.com/oliverw/miningcore
+> cd miningcore/src/Miningcore
+> dotnet publish -c Release --framework net6.0  -o ..\..\build
+```
+
+### Building on Windows - Visual Studio
+
+- Install [Visual Studio 2022](https://www.visualstudio.com/vs/). Visual Studio Community Edition is fine.
+- Open `Miningcore.sln` in Visual Studio
+
+
+### After successful build
+
+Create a configuration file `config.json` as described [here](https://github.com/oliverw/miningcore/wiki/Configuration)
+
+```console
+$ cd ../../build
+$ Miningcore -c config.json
+```
+
+### Supported Currencies
 
 Refer to [this file](https://github.com/oliverw/miningcore/blob/master/src/Miningcore/coins.json) for a complete list.
 
-## Caveats
+### Caveats
 
-### Monero
+#### Monero
 
 - Monero's Wallet Daemon (monero-wallet-rpc) relies on HTTP digest authentication for authentication which is currently not supported by Miningcore. Therefore monero-wallet-rpc must be run with the `--disable-rpc-login` option. It is advisable to mitigate the resulting security risk by putting monero-wallet-rpc behind a reverse proxy like nginx with basic-authentication.
 - Miningcore utilizes RandomX's light-mode by default which consumes only **256 MB of memory per RandomX-VM**. A modern (2021) era CPU will be able to handle ~ 50 shares per second in this mode.
 - If you are running into throughput problems on your pool you can either increase the number of RandomX virtual machines in light-mode by adding `"randomXVmCount": x` to your pool configuration where x is at maximum equal to the machine's number of processor cores. Alternatively you can activate fast-mode by adding `"randomXFlagsAdd": "RANDOMX_FLAG_FULL_MEM"` to the pool configuration. Fast mode increases performance by 10x but requires roughly **3 GB of RAM per RandomX-VM**.
 
-### ZCash
+#### ZCash
 
 - Pools needs to be configured with both a t-addr and z-addr (new configuration property "z-address" of the pool configuration element)
 - First configured zcashd daemon needs to control both the t-addr and the z-addr (have the private key)
 - To increase the share processing throughput it is advisable to increase the maximum number of concurrent equihash solvers through the new configuration property "equihashMaxThreads" of the cluster configuration element. Increasing this value by one increases the peak memory consumption of the pool cluster by 1 GB.
 - Miners may use both t-addresses and z-addresses when connecting to the pool
 
-### Vertcoin
+#### Vertcoin
 
 - Be sure to copy the file `verthash.dat` from your vertcoin blockchain folder to your Miningcore server
 - In your Miningcore config file add this property to your vertcoin pool configuration: `"vertHashDataFile": "/path/to/verthash.dat",`
@@ -191,8 +174,6 @@ Miningcore comes with an integrated REST API. Please refer to this page for inst
 ## Running a production pool
 
 A public production pool requires a web-frontend for your users to check their hashrate, earnings etc. Miningcore does not include such frontend but there are several community projects that can be used as starting point.
-
-Once again, do not run a production pool on Windows! This is not a supported configuration.
 
 ## Donations
 

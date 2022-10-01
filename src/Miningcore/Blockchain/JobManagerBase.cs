@@ -16,8 +16,8 @@ public abstract class JobManagerBase<TJob>
 {
     protected JobManagerBase(IComponentContext ctx, IMessageBus messageBus)
     {
-        Contract.RequiresNonNull(ctx);
-        Contract.RequiresNonNull(messageBus);
+        Contract.RequiresNonNull(ctx, nameof(ctx));
+        Contract.RequiresNonNull(messageBus, nameof(messageBus));
 
         this.ctx = ctx;
         this.messageBus = messageBus;
@@ -39,13 +39,11 @@ public abstract class JobManagerBase<TJob>
 
     protected async Task StartDaemonAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-
         while(!await AreDaemonsHealthyAsync(ct))
         {
             logger.Info(() => "Waiting for daemons to come online ...");
 
-            await timer.WaitForNextTickAsync(ct);
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
         }
 
         logger.Info(() => "All daemons online");
@@ -54,7 +52,7 @@ public abstract class JobManagerBase<TJob>
         {
             logger.Info(() => "Waiting for daemon to connect to peers ...");
 
-            await timer.WaitForNextTickAsync(ct);
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
         }
     }
 
@@ -91,8 +89,8 @@ public abstract class JobManagerBase<TJob>
 
     public virtual void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        Contract.RequiresNonNull(pc);
-        Contract.RequiresNonNull(cc);
+        Contract.RequiresNonNull(pc, nameof(pc));
+        Contract.RequiresNonNull(cc, nameof(cc));
 
         logger = LogUtil.GetPoolScopedLogger(typeof(JobManagerBase<TJob>), pc);
         poolConfig = pc;
@@ -103,7 +101,7 @@ public abstract class JobManagerBase<TJob>
 
     public async Task StartAsync(CancellationToken ct)
     {
-        Contract.RequiresNonNull(poolConfig);
+        Contract.RequiresNonNull(poolConfig, nameof(poolConfig));
 
         logger.Info(() => "Starting Job Manager ...");
 

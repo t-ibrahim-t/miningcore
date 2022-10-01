@@ -147,8 +147,7 @@ namespace misc_utils
     {}
     ~call_befor_die()
     {
-      try { m_func(); }
-      catch (...) { /* ignore */ }
+      m_func();
     }
   };
 
@@ -158,11 +157,6 @@ namespace misc_utils
     auto_scope_leave_caller slc(new call_befor_die<t_scope_leave_handler>(f));
     return slc;
   }
-
-  template<typename T> struct struct_init: T
-  {
-    struct_init(): T{} {}
-  };
 
 }
 }

@@ -4,7 +4,7 @@ using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using Autofac;
 using AutoMapper;
-using Microsoft.IO;
+using JetBrains.Annotations;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Equihash.Configuration;
 using Miningcore.Configuration;
@@ -25,6 +25,7 @@ using static Miningcore.Util.ActionUtils;
 namespace Miningcore.Blockchain.Equihash;
 
 [CoinFamily(CoinFamily.Equihash)]
+[UsedImplicitly]
 public class EquihashPool : PoolBase
 {
     public EquihashPool(IComponentContext ctx,
@@ -34,9 +35,8 @@ public class EquihashPool : PoolBase
         IMapper mapper,
         IMasterClock clock,
         IMessageBus messageBus,
-        RecyclableMemoryStreamManager rmsm,
         NicehashService nicehashService) :
-        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, rmsm, nicehashService)
+        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, nicehashService)
     {
     }
 
@@ -56,7 +56,7 @@ public class EquihashPool : PoolBase
 
         if(pc.Template.As<EquihashCoinTemplate>().UsesZCashAddressFormat &&
            string.IsNullOrEmpty(extraConfig?.ZAddress))
-            throw new PoolStartupException("Pool z-address is not configured", pc.Id);
+            throw new PoolStartupException("Pool z-address is not configured");
     }
 
     protected override async Task SetupJobManager(CancellationToken ct)
@@ -93,9 +93,9 @@ public class EquihashPool : PoolBase
         hashrateDivisor = (double) new BigRational(manager.ChainConfig.Diff1BValue, EquihashConstants.ZCashDiff1b);
     }
 
-    protected override async Task InitStatsAsync(CancellationToken ct)
+    protected override async Task InitStatsAsync()
     {
-        await base.InitStatsAsync(ct);
+        await base.InitStatsAsync();
 
         blockchainStats = manager.BlockchainStats;
     }
@@ -196,15 +196,12 @@ public class EquihashPool : PoolBase
         {
             await connection.RespondErrorAsync(StratumError.UnauthorizedWorker, "Authorization failed", request.Id, context.IsAuthorized);
 
-            if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
-            {
-                // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+            // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
+            logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+            banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-                Disconnect(connection);
-            }
+            CloseConnection(connection);
         }
     }
 
@@ -236,10 +233,12 @@ public class EquihashPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            var requestParams = request.ParamsAs<string[]>();
-
             // submit
+            var requestParams = request.ParamsAs<string[]>();
+            var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
+
             var share = await manager.SubmitShareAsync(connection, requestParams, ct);
+
             await connection.RespondAsync(true, request.Id);
 
             // publish
@@ -256,8 +255,7 @@ public class EquihashPool : PoolBase
 
             // update client stats
             context.Stats.ValidShares++;
-
-            await UpdateVarDiffAsync(connection, false, ct);
+            await UpdateVarDiffAsync(connection);
         }
 
         catch(StratumException ex)
@@ -357,15 +355,21 @@ public class EquihashPool : PoolBase
         }
     }
 
-    protected async Task OnNewJobAsync(object jobParams)
+    protected Task OnNewJobAsync(object jobParams)
     {
         currentJobParams = jobParams;
 
-        logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
+        logger.Info(() => "Broadcasting job");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        return Guard(()=> Task.WhenAll(ForEachConnection(async connection =>
         {
+            if(!connection.IsAlive)
+                return;
+
             var context = connection.ContextAs<BitcoinWorkerContext>();
+
+            if(!context.IsSubscribed || !context.IsAuthorized || CloseIfDead(connection, context))
+                return;
 
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
@@ -373,7 +377,7 @@ public class EquihashPool : PoolBase
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
-        }));
+        })), ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"));
     }
 
     public override double HashrateFromShares(double shares, double interval)
@@ -387,13 +391,16 @@ public class EquihashPool : PoolBase
 
     public override double ShareMultiplier => 1;
 
-    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
+    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff)
     {
-        await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
+        var context = connection.ContextAs<BitcoinWorkerContext>();
 
-        if(connection.Context.ApplyPendingDifficulty())
+        context.EnqueueNewDifficulty(newDiff);
+
+        // apply immediately and notify
+        if(context.ApplyPendingDifficulty())
         {
-            await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(connection.Context.Difficulty) });
+            await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(context.Difficulty) });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
         }
     }

@@ -31,8 +31,7 @@
 #include <boost/variant.hpp>
 #include <boost/any.hpp>
 #include <string>
-#include <vector>
-#include <deque>
+#include <list>
 
 #define PORTABLE_STORAGE_SIGNATUREA 0x01011101
 #define PORTABLE_STORAGE_SIGNATUREB 0x01020101 // bender's nightmare 
@@ -72,9 +71,6 @@ namespace epee
   {
     struct section;
 
-    template<typename T> struct entry_container { typedef std::vector<T> type; static void reserve(type &t, size_t n) { t.reserve(n); } };
-    template<> struct entry_container<bool> { typedef std::deque<bool> type; static void reserve(type &t, size_t n) {} };
-
     /************************************************************************/
     /*                                                                      */
     /************************************************************************/
@@ -82,7 +78,6 @@ namespace epee
     struct array_entry_t
     {
       array_entry_t():m_it(m_array.end()){}        
-      array_entry_t(const array_entry_t& other):m_array(other.m_array), m_it(m_array.end()){}
 
       const t_entry_type* get_first_val() const 
       {
@@ -124,13 +119,8 @@ namespace epee
         return m_array.back();
       }
 
-      void reserve(size_t n)
-      {
-        entry_container<t_entry_type>::reserve(m_array, n);
-      }
-
-      typename entry_container<t_entry_type>::type m_array;
-      mutable typename entry_container<t_entry_type>::type::const_iterator m_it;
+      std::list<t_entry_type> m_array;
+      mutable typename std::list<t_entry_type>::const_iterator m_it;
     };
 
 

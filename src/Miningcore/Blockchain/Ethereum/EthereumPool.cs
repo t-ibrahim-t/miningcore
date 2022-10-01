@@ -3,7 +3,7 @@ using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using Autofac;
 using AutoMapper;
-using Microsoft.IO;
+using JetBrains.Annotations;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
@@ -20,6 +20,7 @@ using static Miningcore.Util.ActionUtils;
 namespace Miningcore.Blockchain.Ethereum;
 
 [CoinFamily(CoinFamily.Ethereum)]
+[UsedImplicitly]
 public class EthereumPool : PoolBase
 {
     public EthereumPool(IComponentContext ctx,
@@ -29,9 +30,8 @@ public class EthereumPool : PoolBase
         IMapper mapper,
         IMasterClock clock,
         IMessageBus messageBus,
-        RecyclableMemoryStreamManager rmsm,
         NicehashService nicehashService) :
-        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, rmsm, nicehashService)
+        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, nicehashService)
     {
     }
 
@@ -151,14 +151,11 @@ public class EthereumPool : PoolBase
 
         else
         {
-            if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
-            {
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+            logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+            banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-                Disconnect(connection);
-            }
+            CloseConnection(connection);
         }
     }
 
@@ -221,8 +218,7 @@ public class EthereumPool : PoolBase
 
             // update client stats
             context.Stats.ValidShares++;
-
-            await UpdateVarDiffAsync(connection, false, ct);
+            await UpdateVarDiffAsync(connection);
         }
 
         catch(StratumException ex)
@@ -327,14 +323,11 @@ public class EthereumPool : PoolBase
 
         else
         {
-            if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
-            {
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+            logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+            banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-                Disconnect(connection);
-            }
+            CloseConnection(connection);
         }
     }
 
@@ -397,9 +390,9 @@ public class EthereumPool : PoolBase
         }
     }
 
-    protected override async Task InitStatsAsync(CancellationToken ct)
+    protected override async Task InitStatsAsync()
     {
-        await base.InitStatsAsync(ct);
+        await base.InitStatsAsync();
 
         blockchainStats = manager.BlockchainStats;
     }
@@ -417,15 +410,21 @@ public class EthereumPool : PoolBase
         return context.Worker;
     }
 
-    protected virtual async Task OnNewJobAsync()
+    protected virtual Task OnNewJobAsync()
     {
         var currentJobParams = manager.GetJobParamsForStratum();
 
-        logger.Info(() => $"Broadcasting job {currentJobParams[0]}");
+        logger.Info(() => "Broadcasting job");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        return Guard(()=> Task.WhenAll(ForEachConnection(async connection =>
         {
+            if(!connection.IsAlive)
+                return;
+
             var context = connection.ContextAs<EthereumWorkerContext>();
+
+            if(!context.IsSubscribed || !context.IsAuthorized || CloseIfDead(connection, context))
+                return;
 
             switch(context.ProtocolVersion)
             {
@@ -437,7 +436,7 @@ public class EthereumPool : PoolBase
                     await SendJob(context, connection, currentJobParams);
                     break;
             }
-        }));
+        })), ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"));
     }
 
     protected void EnsureProtocolVersion(EthereumWorkerContext context, int version)
@@ -527,19 +526,18 @@ public class EthereumPool : PoolBase
 
     public override double ShareMultiplier => 1;
 
-    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
+    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff)
     {
-        await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
+        await base.OnVarDiffUpdateAsync(connection, newDiff);
 
+        // apply immediately and notify client
         var context = connection.ContextAs<EthereumWorkerContext>();
 
-        if(context.HasPendingDifficulty)
+        if(context.ApplyPendingDifficulty())
         {
             switch(context.ProtocolVersion)
             {
                 case 1:
-                    context.ApplyPendingDifficulty();
-
                     await SendWork(context, connection, 0);
                     break;
 

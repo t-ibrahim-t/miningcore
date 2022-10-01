@@ -17,8 +17,8 @@ public class SOLOPaymentScheme : IPayoutScheme
         IShareRepository shareRepo,
         IBalanceRepository balanceRepo)
     {
-        Contract.RequiresNonNull(shareRepo);
-        Contract.RequiresNonNull(balanceRepo);
+        Contract.RequiresNonNull(shareRepo, nameof(shareRepo));
+        Contract.RequiresNonNull(balanceRepo, nameof(balanceRepo));
 
         this.shareRepo = shareRepo;
         this.balanceRepo = balanceRepo;
@@ -30,8 +30,7 @@ public class SOLOPaymentScheme : IPayoutScheme
 
     #region IPayoutScheme
 
-    public async Task UpdateBalancesAsync(IDbConnection con, IDbTransaction tx, IMiningPool pool, IPayoutHandler payoutHandler,
-        Block block, decimal blockReward, CancellationToken ct)
+    public async Task UpdateBalancesAsync(IDbConnection con, IDbTransaction tx, IMiningPool pool, IPayoutHandler payoutHandler, Block block, decimal blockReward, CancellationToken ct)
     {
         var poolConfig = pool.Config;
 
@@ -46,7 +45,7 @@ public class SOLOPaymentScheme : IPayoutScheme
 
             if(amount > 0)
             {
-                logger.Info(() => $"Crediting {address} with {payoutHandler.FormatAmount(amount)} for block {block.BlockHeight}");
+                logger.Info(() => $"Adding {payoutHandler.FormatAmount(amount)} to balance of {address} for block {block.BlockHeight}");
 
                 await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, address, amount, $"Reward for block {block.BlockHeight}");
             }
@@ -55,13 +54,13 @@ public class SOLOPaymentScheme : IPayoutScheme
         // delete discarded shares
         if(shareCutOffDate.HasValue)
         {
-            var cutOffCount = await shareRepo.CountSharesByMinerAsync(con, tx, poolConfig.Id, block.Miner, ct);
+            var cutOffCount = await shareRepo.CountSharesByMinerAsync(con, tx, poolConfig.Id, block.Miner);
 
             if(cutOffCount > 0)
             {
                 logger.Info(() => $"Deleting {cutOffCount} discarded shares for {block.Miner}");
 
-                await shareRepo.DeleteSharesByMinerAsync(con, tx, poolConfig.Id, block.Miner, ct);
+                await shareRepo.DeleteSharesByMinerAsync(con, tx, poolConfig.Id, block.Miner);
             }
         }
     }

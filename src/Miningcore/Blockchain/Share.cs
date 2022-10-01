@@ -72,12 +72,6 @@ public class Share
     public string BlockHash { get; set; }
 
     /// <summary>
-    /// Block hash
-    /// </summary>
-    [ProtoMember(16)]
-    public string BlockType { get; set; }
-
-    /// <summary>
     /// If this share presumably resulted in a block
     /// </summary>
     [ProtoMember(12)]

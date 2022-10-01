@@ -4,7 +4,7 @@ using System.Reactive.Threading.Tasks;
 using System.Numerics;
 using Autofac;
 using AutoMapper;
-using Microsoft.IO;
+using JetBrains.Annotations;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Ergo.Configuration;
 using Miningcore.Configuration;
@@ -25,6 +25,7 @@ using static Miningcore.Util.ActionUtils;
 namespace Miningcore.Blockchain.Ergo;
 
 [CoinFamily(CoinFamily.Ergo)]
+[UsedImplicitly]
 public class ErgoPool : PoolBase
 {
     public ErgoPool(IComponentContext ctx,
@@ -34,9 +35,8 @@ public class ErgoPool : PoolBase
         IMapper mapper,
         IMasterClock clock,
         IMessageBus messageBus,
-        RecyclableMemoryStreamManager rmsm,
         NicehashService nicehashService) :
-        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, rmsm, nicehashService)
+        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, nicehashService)
     {
     }
 
@@ -142,15 +142,12 @@ public class ErgoPool : PoolBase
         {
             await connection.RespondErrorAsync(StratumError.UnauthorizedWorker, "Authorization failed", request.Id, context.IsAuthorized);
 
-            if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
-            {
-                // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+            // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
+            logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+            banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-                Disconnect(connection);
-            }
+            CloseConnection(connection);
         }
     }
 
@@ -182,10 +179,12 @@ public class ErgoPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            var requestParams = request.ParamsAs<string[]>();
-
             // submit
-            var share = await manager.SubmitShareAsync(connection, requestParams, ct);
+            var requestParams = request.ParamsAs<string[]>();
+            var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
+
+            var share = await manager.SubmitShareAsync(connection, requestParams, poolEndpoint.Difficulty, ct);
+
             await connection.RespondAsync(true, request.Id);
 
             // publish
@@ -202,8 +201,7 @@ public class ErgoPool : PoolBase
 
             // update client stats
             context.Stats.ValidShares++;
-
-            await UpdateVarDiffAsync(connection, false, ct);
+            await UpdateVarDiffAsync(connection);
         }
 
         catch(StratumException ex)
@@ -222,18 +220,24 @@ public class ErgoPool : PoolBase
         }
     }
 
-    protected virtual async Task OnNewJobAsync(object[] jobParams)
+    protected virtual Task OnNewJobAsync(object[] jobParams)
     {
         currentJobParams = jobParams;
 
-        logger.Info(() => $"Broadcasting job {jobParams[0]}");
+        logger.Info(() => "Broadcasting job");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        return Guard(()=> Task.WhenAll(ForEachConnection(async connection =>
         {
+            if(!connection.IsAlive)
+                return;
+
             var context = connection.ContextAs<ErgoWorkerContext>();
 
+            if(!context.IsSubscribed || !context.IsAuthorized || CloseIfDead(connection, context))
+                return;
+
             await SendJob(connection, context, currentJobParams);
-        }));
+        })), ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"));
     }
 
     private async Task SendJob(StratumConnection connection, ErgoWorkerContext context, object[] jobParams)
@@ -314,9 +318,9 @@ public class ErgoPool : PoolBase
         }
     }
 
-    protected override async Task InitStatsAsync(CancellationToken ct)
+    protected override async Task InitStatsAsync()
     {
-        await base.InitStatsAsync(ct);
+        await base.InitStatsAsync();
 
         blockchainStats = manager.BlockchainStats;
     }
@@ -372,11 +376,11 @@ public class ErgoPool : PoolBase
         return result;
     }
 
-    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
+    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff)
     {
-        await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
-
         var context = connection.ContextAs<ErgoWorkerContext>();
+
+        context.EnqueueNewDifficulty(newDiff);
 
         if(context.ApplyPendingDifficulty())
         {

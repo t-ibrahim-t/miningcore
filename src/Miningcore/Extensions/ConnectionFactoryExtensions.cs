@@ -53,10 +53,7 @@ public static class ConnectionFactoryExtensions
 
                 catch
                 {
-                    if(autoCommit!)
-                    {
-                        tx.Rollback();
-                    }
+                    tx.Rollback();
                     throw;
                 }
             }

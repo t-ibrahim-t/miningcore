@@ -38,12 +38,11 @@ public class ClusterApiController : ApiControllerBase
     public async Task<Responses.Block[]> PageBlocksPagedAsync(
         [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
     {
-        var ct = HttpContext.RequestAborted;
-        var blockStates = state is { Length: > 0 } ?
+        var blockStates = state != null && state.Length > 0 ?
             state :
             new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
 
-        var blocks = (await cf.Run(con => blocksRepo.PageBlocksAsync(con, blockStates, page, pageSize, ct)))
+        var blocks = (await cf.Run(con => blocksRepo.PageBlocksAsync(con, blockStates, page, pageSize)))
             .Select(mapper.Map<Responses.Block>)
             .Where(x => enabledPools.Contains(x.PoolId))
             .ToArray();

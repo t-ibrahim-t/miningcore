@@ -1,9 +1,7 @@
 using AutoMapper;
 using Miningcore.Api.Responses;
 using Miningcore.Blockchain;
-using Miningcore.Blockchain.Ergo.Configuration;
 using Miningcore.Configuration;
-using Miningcore.Extensions;
 using Miningcore.Mining;
 
 namespace Miningcore.Api.Extensions;
@@ -30,19 +28,9 @@ public static class MiningPoolExtensions
         {
             var extra = poolInfo.PaymentProcessing.Extra;
 
-            extra.StripValue(nameof(ErgoPaymentProcessingConfigExtra.WalletPassword));
+            //extra.StripValue(nameof(EthereumPoolPaymentProcessingConfigExtra.CoinbasePassword));
         }
 
-        if(poolInfo.Ports != null)
-        {
-            foreach(var port in poolInfo.Ports.Keys)
-            {
-                var portInfo = poolInfo.Ports[port];
-
-                portInfo.TlsPfxFile = null;
-                portInfo.TlsPfxPassword = null;
-            }
-        }
         return poolInfo;
     }
 }

@@ -1,18 +1,18 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
+using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Text.RegularExpressions;
 using Autofac;
 using AutoMapper;
-using Microsoft.IO;
 using Miningcore.Banning;
 using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Nicehash;
+using Miningcore.Nicehash.API;
 using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
@@ -23,8 +23,6 @@ using Miningcore.VarDiff;
 using Newtonsoft.Json;
 using NLog;
 using Contract = Miningcore.Contracts.Contract;
-using static Miningcore.Util.ActionUtils;
-
 // ReSharper disable InconsistentlySynchronizedField
 
 namespace Miningcore.Mining;
@@ -39,17 +37,16 @@ public abstract class PoolBase : StratumServer,
         IMapper mapper,
         IMasterClock clock,
         IMessageBus messageBus,
-        RecyclableMemoryStreamManager rmsm,
-        NicehashService nicehashService) : base(ctx, messageBus, rmsm, clock)
+        NicehashService nicehashService) : base(ctx, messageBus, clock)
     {
-        Contract.RequiresNonNull(ctx);
-        Contract.RequiresNonNull(serializerSettings);
-        Contract.RequiresNonNull(cf);
-        Contract.RequiresNonNull(statsRepo);
-        Contract.RequiresNonNull(mapper);
-        Contract.RequiresNonNull(clock);
-        Contract.RequiresNonNull(messageBus);
-        Contract.RequiresNonNull(nicehashService);
+        Contract.RequiresNonNull(ctx, nameof(ctx));
+        Contract.RequiresNonNull(serializerSettings, nameof(serializerSettings));
+        Contract.RequiresNonNull(cf, nameof(cf));
+        Contract.RequiresNonNull(statsRepo, nameof(statsRepo));
+        Contract.RequiresNonNull(mapper, nameof(mapper));
+        Contract.RequiresNonNull(clock, nameof(clock));
+        Contract.RequiresNonNull(messageBus, nameof(messageBus));
+        Contract.RequiresNonNull(nicehashService, nameof(nicehashService));
 
         this.serializerSettings = serializerSettings;
         this.cf = cf;
@@ -70,6 +67,8 @@ public abstract class PoolBase : StratumServer,
     protected static readonly TimeSpan loginFailureBanTimeout = TimeSpan.FromSeconds(10);
     protected static readonly Regex regexStaticDiff = new(@";?d=(\d*(\.\d+)?)", RegexOptions.Compiled);
     protected const string PasswordControlVarsSeparator = ";";
+
+    protected readonly Dictionary<PoolEndpoint, VarDiffManager> varDiffManagers = new();
 
     protected abstract Task SetupJobManager(CancellationToken ct);
     protected abstract WorkerContextBase CreateWorkerContext();
@@ -97,13 +96,19 @@ public abstract class PoolBase : StratumServer,
 
     protected override void OnConnect(StratumConnection connection, IPEndPoint ipEndPoint)
     {
-        // setup context
         var context = CreateWorkerContext();
         var poolEndpoint = poolConfig.Ports[ipEndPoint.Port];
-        var varDiff = poolConfig.EnableInternalStratum == true ? poolEndpoint.VarDiff : null;
-
-        context.Init(poolEndpoint.Difficulty, varDiff, clock);
+        context.Init(poolEndpoint.Difficulty, poolConfig.EnableInternalStratum == true ? poolEndpoint.VarDiff : null, clock);
         connection.SetContext(context);
+
+        // varDiff setup
+        if(context.VarDiff != null)
+        {
+            lock(context.VarDiff)
+            {
+                StartVarDiffIdleUpdate(connection, poolEndpoint);
+            }
+        }
 
         // expect miner to establish communication within a certain time
         EnsureNoZombieClient(connection);
@@ -122,7 +127,7 @@ public abstract class PoolBase : StratumServer,
                     {
                         logger.Info(() => $"[{connection.ConnectionId}] Booting zombie-worker (post-connect silence)");
 
-                        Disconnect(connection);
+                        CloseConnection(connection);
                     }
                 }
 
@@ -138,105 +143,101 @@ public abstract class PoolBase : StratumServer,
 
     #region VarDiff
 
-    protected async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
+    protected async Task UpdateVarDiffAsync(StratumConnection connection, bool isIdleUpdate = false)
     {
-        var context = connection.Context;
+        var context = connection.ContextAs<WorkerContextBase>();
 
         if(context.VarDiff != null)
         {
-            logger.Debug(() => $"[{connection.ConnectionId}] Updating VarDiff{(idle ? " [IDLE]" : "")}");
+            logger.Debug(() => $"[{connection.ConnectionId}] Updating VarDiff" + (isIdleUpdate ? " [idle]" : string.Empty));
 
+            // get or create manager
+            VarDiffManager varDiffManager;
             var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
-            var newDiff = !idle ?
-                VarDiffManager.Update(context, poolEndpoint.VarDiff, clock) :
-                VarDiffManager.IdleUpdate(context, poolEndpoint.VarDiff, clock);
+            lock(varDiffManagers)
+            {
+                if(!varDiffManagers.TryGetValue(poolEndpoint, out varDiffManager))
+                {
+                    varDiffManager = new VarDiffManager(poolEndpoint.VarDiff, clock);
+                    varDiffManagers[poolEndpoint] = varDiffManager;
+                }
+            }
+
+            double? newDiff = null;
+
+            lock(context.VarDiff)
+            {
+                StartVarDiffIdleUpdate(connection, poolEndpoint);
+
+                // update it
+                newDiff = varDiffManager.Update(context.VarDiff, context.Difficulty, isIdleUpdate);
+            }
 
             if(newDiff != null)
             {
-                logger.Info(() => $"[{connection.ConnectionId}] VarDiff update to {Math.Round(newDiff.Value, 3)}{(idle ? " [IDLE]" : "")}");
+                logger.Info(() => $"[{connection.ConnectionId}] VarDiff update to {Math.Round(newDiff.Value, 3)}");
 
-                await OnVarDiffUpdateAsync(connection, newDiff.Value, ct);
+                await OnVarDiffUpdateAsync(connection, newDiff.Value);
             }
         }
     }
 
-    private async Task RunVardiffIdleUpdaterAsync(int interval, CancellationToken ct)
+    /// <summary>
+    /// Wire interval based vardiff updates for client
+    /// WARNING: Assumes to be invoked with lock held on context.VarDiff
+    /// </summary>
+    private void StartVarDiffIdleUpdate(StratumConnection connection, PoolEndpoint poolEndpoint)
     {
-        await Guard(async () =>
-        {
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(interval));
+        // Check Every Target Time as we adjust the diff to meet target
+        // Diff may not be changed, only be changed when avg is out of the range.
+        // Diff must be dropped once changed. Will not affect reject rate.
 
-            while(await timer.WaitForNextTickAsync(ct))
+        var shareReceived = messageBus.Listen<StratumShare>()
+            .Where(x => x.Share.PoolId == poolConfig.Id && x.Connection == connection)
+            .Select(_ => Unit.Default)
+            .Take(1);
+
+        var timeout = poolEndpoint.VarDiff.TargetTime;
+
+        Observable.Timer(TimeSpan.FromSeconds(timeout))
+            .TakeUntil(Observable.Merge(shareReceived, connection.Terminated))
+            .Where(_ => connection.IsAlive)
+            .Select(x => Observable.FromAsync(() => UpdateVarDiffAsync(connection, true)))
+            .Concat()
+            .Subscribe(_ => { }, ex =>
             {
-                logger.Debug(() => "Vardiff Idle Update pass begins");
-
-                await Guard(() => ForEachMinerAsync(async (connection, _ct) =>
-                {
-                    await Guard(() => UpdateVarDiffAsync(connection, true, _ct),
-                        ex => logger.Error(() => $"[{connection.ConnectionId}] Error updating vardiff: {ex.Message}"));
-                }, ct));
-
-                logger.Debug(() => "Vardiff Idle Update pass ends");
-            }
-        }, ex =>
-        {
-            if(ex is not OperationCanceledException)
-                logger.Error(ex);
-        });
+                logger.Debug(ex, nameof(StartVarDiffIdleUpdate));
+            });
     }
 
-    protected virtual Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken _)
+    protected virtual Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff)
     {
-        connection.Context.EnqueueNewDifficulty(newDiff);
+        var context = connection.ContextAs<WorkerContextBase>();
+        context.EnqueueNewDifficulty(newDiff);
 
-        return Task.CompletedTask;
+        return Task.FromResult(true);
     }
 
     #endregion // VarDiff
 
-    protected Task ForEachMinerAsync(Func<StratumConnection, CancellationToken, Task> func)
+    protected bool CloseIfDead(StratumConnection connection, WorkerContextBase context)
     {
-        return ForEachMinerAsync(func, CancellationToken.None);
-    }
+        var lastActivityAgo = clock.Now - context.LastActivity;
 
-    protected async Task ForEachMinerAsync(Func<StratumConnection, CancellationToken, Task> func, CancellationToken ct)
-    {
-        await Parallel.ForEachAsync(connections, ct, async (kvp, _ct) =>
+        if(poolConfig.ClientConnectionTimeout > 0 &&
+           lastActivityAgo.TotalSeconds > poolConfig.ClientConnectionTimeout)
         {
-            var connection = kvp.Value;
+            logger.Info(() => $"[[{connection.ConnectionId}] Booting zombie-worker (idle-timeout exceeded)");
+            CloseConnection(connection);
 
-            try
-            {
-                if(!_ct.IsCancellationRequested && connection.IsAlive && connection.Context.IsAuthorized)
-                {
-                    ZombieCheck(connection);
-
-                    await func(connection, _ct);
-                }
-            }
-
-            catch(Exception ex)
-            {
-                logger.Error(() => $"[{connection.ConnectionId}] {LogUtil.DotTerminate(ex.Message)} Closing connection ...");
-
-                Disconnect(connection);
-            }
-        });
-    }
-
-    protected void ZombieCheck(StratumConnection connection)
-    {
-        if(poolConfig.ClientConnectionTimeout > 0)
-        {
-            var lastActivityAgo = clock.Now - connection.Context.LastActivity;
-
-            if(lastActivityAgo.TotalSeconds > poolConfig.ClientConnectionTimeout)
-                throw new Exception($"Detected zombie-worker (idle-timeout exceeded)");
+            return true;
         }
+
+        return false;
     }
 
-    protected void SetupBanManagement()
+    protected void SetupBanning(ClusterConfig clusterConfig)
     {
         if(poolConfig.Banning?.Enabled == true)
         {
@@ -245,19 +246,19 @@ public abstract class PoolBase : StratumServer,
         }
     }
 
-    protected virtual async Task InitStatsAsync(CancellationToken ct)
+    protected virtual async Task InitStatsAsync()
     {
         if(clusterConfig.ShareRelay == null)
-            await LoadStatsAsync(ct);
+            await LoadStatsAsync();
     }
 
-    private async Task LoadStatsAsync(CancellationToken ct)
+    private async Task LoadStatsAsync()
     {
         try
         {
             logger.Debug(() => "Loading pool stats");
 
-            var stats = await cf.Run(con => statsRepo.GetLastPoolStatsAsync(con, poolConfig.Id, ct));
+            var stats = await cf.Run(con => statsRepo.GetLastPoolStatsAsync(con, poolConfig.Id));
 
             if(stats != null)
             {
@@ -297,29 +298,10 @@ public abstract class PoolBase : StratumServer,
 
                     banManager.Ban(connection.RemoteEndpoint.Address, TimeSpan.FromSeconds(config.Time));
 
-                    Disconnect(connection);
+                    CloseConnection(connection);
                 }
             }
         }
-    }
-
-    protected async Task RunStratum(CancellationToken ct)
-    {
-        var ipEndpoints = poolConfig.Ports.Keys
-            .Select(port => PoolEndpoint2IPEndpoint(port, poolConfig.Ports[port]))
-            .ToArray();
-
-        var varDiffEnabled = ipEndpoints.Any(x => x.PoolEndpoint.VarDiff != null);
-
-        var tasks = new List<Task>
-        {
-            base.RunAsync(ct, ipEndpoints)
-        };
-
-        if(varDiffEnabled)
-            tasks.Add(RunVardiffIdleUpdaterAsync(poolConfig.VardiffIdleSweepInterval ?? 30, ct));
-
-        await Task.WhenAll(tasks);
     }
 
     protected virtual async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName)
@@ -339,10 +321,8 @@ public abstract class PoolBase : StratumServer,
         return new StratumEndpoint(new IPEndPoint(listenAddress, port), pep);
     }
 
-    private void LogPoolInfo()
+    private void OutputPoolInfo()
     {
-        logger.Info(() => "Pool Online");
-
         var msg = $@"
 
 Mining Pool:            {poolConfig.Id}
@@ -351,7 +331,7 @@ Network Connected:      {blockchainStats.NetworkType}
 Detected Reward Type:   {blockchainStats.RewardType}
 Current Block Height:   {blockchainStats.BlockHeight}
 Current Connect Peers:  {blockchainStats.ConnectedPeers}
-Network Difficulty:     {(blockchainStats.NetworkDifficulty > 1000 ? FormatUtil.FormatQuantity(blockchainStats.NetworkDifficulty) : blockchainStats.NetworkDifficulty)}
+Network Difficulty:     {blockchainStats.NetworkDifficulty}
 Network Hash Rate:      {FormatUtil.FormatHashrate(blockchainStats.NetworkHashrate)}
 Stratum Port(s):        {(poolConfig.Ports?.Any() == true ? string.Join(", ", poolConfig.Ports.Keys) : string.Empty)}
 Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfig.RewardRecipients.Where(x => x.Type != "dev").Sum(x => x.Percentage) : 0)}%
@@ -368,8 +348,8 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
 
     public virtual void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        Contract.RequiresNonNull(pc);
-        Contract.RequiresNonNull(cc);
+        Contract.RequiresNonNull(pc, nameof(pc));
+        Contract.RequiresNonNull(cc, nameof(cc));
 
         logger = LogUtil.GetPoolScopedLogger(typeof(PoolBase), pc);
         poolConfig = pc;
@@ -377,27 +357,33 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
     }
 
     public abstract double HashrateFromShares(double shares, double interval);
-    public virtual double ShareMultiplier => 1;
+    public abstract double ShareMultiplier { get; }
 
     public virtual async Task RunAsync(CancellationToken ct)
     {
-        Contract.RequiresNonNull(poolConfig);
+        Contract.RequiresNonNull(poolConfig, nameof(poolConfig));
 
         logger.Info(() => "Starting Pool ...");
 
         try
         {
-            SetupBanManagement();
-
+            SetupBanning(clusterConfig);
             await SetupJobManager(ct);
-            await InitStatsAsync(ct);
+            await InitStatsAsync();
 
-            LogPoolInfo();
+            logger.Info(() => "Pool Online");
+            OutputPoolInfo();
 
             messageBus.NotifyPoolStatus(this, PoolStatus.Online);
 
             if(poolConfig.EnableInternalStratum == true)
-                await RunStratum(ct);
+            {
+                var ipEndpoints = poolConfig.Ports.Keys
+                    .Select(port => PoolEndpoint2IPEndpoint(port, poolConfig.Ports[port]))
+                    .ToArray();
+
+                await RunAsync(ct, ipEndpoints);
+            }
         }
 
         catch(PoolStartupException)

@@ -1,24 +1,27 @@
+using JetBrains.Annotations;
+
 namespace Miningcore.Persistence.Model.Projections;
 
-public record WorkerPerformanceStats
+public class WorkerPerformanceStats
 {
-    public double Hashrate { get; init; }
-    public double SharesPerSecond { get; init; }
+    public double Hashrate { get; set; }
+    public double SharesPerSecond { get; set; }
 }
 
-public record WorkerPerformanceStatsContainer
+public class WorkerPerformanceStatsContainer
 {
-    public DateTime Created { get; init; }
-    public Dictionary<string, WorkerPerformanceStats> Workers { get; init; }
+    public DateTime Created { get; set; }
+    public Dictionary<string, WorkerPerformanceStats> Workers { get; set; }
 }
 
+[UsedImplicitly]
 public class MinerStats
 {
-    public double PendingShares { get; init; }
-    public decimal PendingBalance { get; init; }
-    public decimal TotalPaid { get; init; }
-    public decimal TodayPaid { get; init; }
+    public double PendingShares { get; set; }
+    public decimal PendingBalance { get; set; }
+    public decimal TotalPaid { get; set; }
+    public decimal TodayPaid { get; set; }
     public Payment LastPayment { get; set; }
     public WorkerPerformanceStatsContainer Performance { get; set; }
-    public MinerWorkerPerformanceStats[] PerformanceStats { get; init; }
+    public MinerWorkerPerformanceStats[] PerformanceStats { get; set; }
 }

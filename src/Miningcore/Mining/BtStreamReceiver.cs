@@ -25,8 +25,8 @@ public class BtStreamReceiver : BackgroundService
         IMessageBus messageBus,
         ClusterConfig clusterConfig)
     {
-        Contract.RequiresNonNull(clock);
-        Contract.RequiresNonNull(messageBus);
+        Contract.RequiresNonNull(clock, nameof(clock));
+        Contract.RequiresNonNull(messageBus, nameof(messageBus));
 
         this.clock = clock;
         this.messageBus = messageBus;

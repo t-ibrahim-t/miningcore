@@ -4,6 +4,7 @@ using System.Reactive.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using Miningcore.Mining;
+using Miningcore.Util;
 using NLog;
 using ZeroMQ;
 using ZeroMQ.Monitoring;
